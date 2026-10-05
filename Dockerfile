@@ -8,7 +8,8 @@ COPY . .
 RUN mkdir -p /app/data && chmod 777 /app/data
 
 ENV PORT=3000
-ENV SECRET_KEY=officehours-dev-secret
 EXPOSE 3000
 
-CMD ["gunicorn", "--bind", "0.0.0.0:3000", "app:app"]
+# Shell form so $PORT (injected by most hosts) expands at runtime.
+# Set SECRET_KEY in the hosting environment — do not bake a secret into the image.
+CMD gunicorn --bind 0.0.0.0:${PORT:-3000} app:app

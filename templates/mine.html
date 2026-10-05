@@ -18,9 +18,16 @@
       {% endfor %}
     </ul>
   {% endif %}
-  <p class="help">
-    Device handoff:
-    <a href="{{ url_for('mine', sid=sid) }}">open my bookings on this browser</a>
-  </p>
+  <div class="help">
+    {% if handoff_url %}
+      <p>Open this link on the other device within 5 minutes. It works once, then stops:</p>
+      <p><a href="{{ handoff_url }}">{{ handoff_url }}</a></p>
+    {% else %}
+      <form class="inline" method="post" action="{{ url_for('create_handoff') }}">
+        Device handoff:
+        <button type="submit">create a one-time link for another device</button>
+      </form>
+    {% endif %}
+  </div>
 </section>
 {% endblock %}

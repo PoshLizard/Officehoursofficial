@@ -39,6 +39,21 @@ docker compose up --build
 
 The app listens on port 3000. Data lives in the `hold-data` volume.
 
+## Deploy (any host)
+
+The repo is host-agnostic — build the `Dockerfile` (or run `gunicorn app:app`) on any platform
+(Render, Fly.io, Railway, a VM, etc.). Two things to set:
+
+- **`SECRET_KEY`** — set a real, random secret in the host's environment. It is intentionally not
+  baked into the image.
+- **Serve over HTTPS.** The session cookie is marked `Secure` automatically when the request arrives
+  over HTTPS (detected via `X-Forwarded-Proto`, which managed hosts set), so a browser only sends it
+  on encrypted connections.
+
+Other notes: the app reads `$PORT` at startup (most hosts inject it); `GET /health` returns
+`{"ok": true}` for health checks; the SQLite file lives at `data/officehours.db`, so mount a
+persistent volume there if you want bookings to survive restarts.
+
 ## Demo accounts
 
 | Email | Password | Role |

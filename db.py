@@ -47,6 +47,14 @@ def init_db():
             user_id INTEGER NOT NULL REFERENCES users(id),
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS handoff_codes (
+            code TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            expires_at TEXT NOT NULL,
+            used INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         """
     )
     conn.commit()

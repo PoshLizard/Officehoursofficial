@@ -1,5 +1,6 @@
 import os
 import secrets
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 
 from flask import Flask, abort, flash, g, redirect, render_template, request, url_for
@@ -10,9 +11,20 @@ from seed import seed
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "officehours-dev-secret")
-app.config["SESSION_COOKIE_HTTPONLY"] = False
-app.config["SESSION_COOKIE_SAMESITE"] = None
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_NAME"] = "hold_flash"
+
+# A device-handoff link is valid for this long and can be used once.
+HANDOFF_TTL = timedelta(minutes=5)
+
+
+def _cookie_secure():
+    # Send the Secure flag whenever the request reached us over HTTPS. Works
+    # behind a TLS-terminating proxy (Render/Fly set X-Forwarded-Proto) and
+    # stays off for plain-HTTP local development so login still works there.
+    forwarded = request.headers.get("X-Forwarded-Proto", "")
+    return request.is_secure or forwarded.split(",")[0].strip() == "https"
 
 
 def current_user():
@@ -34,7 +46,10 @@ def login_required(fn):
 def load_user():
     init_db()
     seed()
-    token = request.args.get("sid") or request.cookies.get("hold_session")
+    # Authenticate from the cookie only. The session token is a long-lived
+    # credential, so it must never be read from the URL (query strings leak
+    # through history, the Referer header, bookmarks and server logs).
+    token = request.cookies.get("hold_session")
     g.user = None
     g.session_token = None
     if not token:
@@ -60,8 +75,9 @@ def persist_session_cookie(response):
         response.set_cookie(
             "hold_session",
             g.session_token,
-            httponly=False,
-            samesite=None,
+            httponly=True,
+            samesite="Lax",
+            secure=_cookie_secure(),
             path="/",
             max_age=60 * 60 * 24 * 14,
         )
@@ -260,7 +276,69 @@ def mine():
         (current_user()["id"],),
     ).fetchall()
     conn.close()
-    return render_template("mine.html", bookings=bookings, sid=g.session_token)
+    return render_template("mine.html", bookings=bookings, handoff_url=None)
+
+
+def _render_mine_with_handoff(handoff_url):
+    conn = get_db()
+    bookings = conn.execute(
+        """
+        SELECT
+            bookings.*,
+            slots.starts_at,
+            slots.location,
+            slots.topic,
+            users.display_name AS ta_name
+        FROM bookings
+        JOIN slots ON slots.id = bookings.slot_id
+        JOIN users ON users.id = slots.ta_id
+        WHERE bookings.student_id = ?
+        ORDER BY slots.starts_at
+        """,
+        (current_user()["id"],),
+    ).fetchall()
+    conn.close()
+    return render_template("mine.html", bookings=bookings, handoff_url=handoff_url)
+
+
+@app.post("/me/handoff")
+@login_required
+def create_handoff():
+    # Mint a short-lived, single-use code the student can open on another
+    # device. It carries no session token: redeeming it creates a brand-new
+    # session, so a leaked link cannot hijack the original one and is dead
+    # the moment it is used or after a few minutes.
+    code = secrets.token_urlsafe(24)
+    expires_at = (datetime.now(timezone.utc) + HANDOFF_TTL).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO handoff_codes (code, user_id, expires_at) VALUES (?, ?, ?)",
+        (code, current_user()["id"], expires_at),
+    )
+    conn.commit()
+    conn.close()
+    handoff_url = url_for("use_handoff", code=code, _external=True)
+    return _render_mine_with_handoff(handoff_url)
+
+
+@app.get("/handoff/<code>")
+def use_handoff(code):
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM handoff_codes WHERE code = ? AND used = 0 AND expires_at >= ?",
+        (code, now),
+    ).fetchone()
+    if not row:
+        conn.close()
+        flash("That device link has expired or was already used. Create a new one.")
+        return redirect(url_for("login"))
+    conn.execute("UPDATE handoff_codes SET used = 1 WHERE code = ?", (code,))
+    conn.commit()
+    conn.close()
+    g.session_token = create_session(row["user_id"])
+    flash("Signed in on this device.")
+    return redirect(url_for("mine"))
 
 
 @app.get("/bookings/<int:booking_id>")
@@ -296,7 +374,6 @@ def booking_detail(booking_id):
     return render_template("booking.html", booking=booking)
 
 
-@app.get("/bookings/<int:booking_id>/cancel")
 @app.post("/bookings/<int:booking_id>/cancel")
 @login_required
 def cancel_booking(booking_id):
@@ -315,11 +392,10 @@ def cancel_booking(booking_id):
     return redirect(url_for("mine"))
 
 
-@app.get("/bookings/<int:booking_id>/transfer")
 @app.post("/bookings/<int:booking_id>/transfer")
 @login_required
 def transfer_booking(booking_id):
-    email = (request.values.get("email") or "").strip().lower()
+    email = (request.form.get("email") or "").strip().lower()
     conn = get_db()
     booking = conn.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,)).fetchone()
     if not booking:

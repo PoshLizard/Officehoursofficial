@@ -1,7 +1,23 @@
+import os
 import sqlite3
+import tempfile
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent / "data" / "officehours.db"
+
+def _db_path():
+    # An explicit override always wins.
+    override = os.environ.get("DATABASE_PATH")
+    if override:
+        return Path(override)
+    # Serverless hosts (Vercel, AWS Lambda) ship a read-only filesystem; the
+    # system temp dir is the only writable spot, so the SQLite file lives there.
+    # Note: /tmp is ephemeral, so data resets when the instance is recycled.
+    if os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        return Path(tempfile.gettempdir()) / "officehours.db"
+    return Path(__file__).resolve().parent / "data" / "officehours.db"
+
+
+DB_PATH = _db_path()
 
 
 def get_db():
